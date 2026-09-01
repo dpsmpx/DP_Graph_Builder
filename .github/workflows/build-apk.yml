@@ -12,6 +12,8 @@ on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published]   # релиз, созданный вручную в веб-интерфейсе
   workflow_dispatch:
 
 permissions:
@@ -172,6 +174,11 @@ jobs:
             sha256sum bin/*.apk | sed 's|bin/||'
             echo '```'
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" bin/*.apk \
-            --title "DP Graph Builder $GITHUB_REF_NAME" \
-            --notes-file notes.md
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Релиз уже создан вручную в веб-интерфейсе: дополняем его файлами.
+            gh release upload "$GITHUB_REF_NAME" bin/*.apk --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" bin/*.apk \
+              --title "DP Graph Builder $GITHUB_REF_NAME" \
+              --notes-file notes.md
+          fi
