@@ -1,0 +1,20 @@
+[project]
+name = "dp-graph-builder"
+version = "2.0.0"
+description = "Построитель графиков функций с расширенным языком формул"
+requires-python = ">=3.10"
+dependencies = ["kivy>=2.3,<3"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+dp-graph-builder = "dp_graph.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Тесты интерфейса сами пропускаются там, где нет графического вывода.
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["dp_graph*"]
