@@ -1,0 +1,184 @@
+# Сборка APK и публикация релиза.
+#
+# Запускается по пушу тега вида v2.0.0 либо вручную из вкладки Actions.
+# По тегу собранные APK публикуются как релиз; при ручном запуске они
+# доступны как артефакты сборки.
+#
+#     git tag v2.0.0 && git push origin v2.0.0
+
+name: Сборка APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [published]   # релиз, созданный вручную в веб-интерфейсе
+  workflow_dispatch:
+
+permissions:
+  contents: write   # нужно, чтобы gh release create мог создать релиз
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Первая сборка качает Android SDK и NDK и компилирует CPython, OpenSSL,
+    # SDL2 и Kivy под каждую архитектуру — это долго. Дальше выручает кэш.
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+        # Именно 17: с JDK 21 Android Gradle Plugin из текущего p4a
+        # собирается ненадёжно.
+
+      - name: Системные зависимости
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip autoconf automake libtool libtool-bin libltdl-dev \
+            pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev \
+            build-essential ccache xvfb
+          # libltdl-dev обязателен: libffi вызывает макрос LT_SYS_SYMBOL_USCORE,
+          # который лежит в ltdl.m4, а не в libtool.m4 из пакета libtool.
+          # Без него autoreconf падает с «possibly undefined macro».
+
+      - name: Тесты
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest kivy
+          xvfb-run -a python -m pytest
+          # Под xvfb выполняются и тесты интерфейса; без дисплея они
+          # пропускаются, и сборка шла бы вслепую.
+
+      - name: Кэш ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}-
+            ccache-${{ runner.os }}-
+        # Кэшируется только ccache (десятки мегабайт). Android SDK, NDK и
+        # дерево сборки занимают вместе около 9 ГБ при лимите GitHub в 10 ГБ
+        # на репозиторий: такой кэш вытеснил бы всё остальное, а его выгрузка
+        # и загрузка заняли бы не меньше, чем повторная сборка.
+
+      - name: buildozer и Cython
+        run: pip install buildozer 'cython<3.2'
+
+      - name: python-for-android с исправлениями
+        run: |
+          set -euo pipefail
+          P4A=.buildozer/android/platform/python-for-android
+          if [ ! -d "$P4A/.git" ]; then
+            mkdir -p "$(dirname "$P4A")"
+            # Версия зафиксирована: патчи ниже привязаны к конкретным строкам,
+            # а master меняется. При обновлении проверьте, нужны ли они ещё.
+            git clone --depth 1 --branch v2026.05.09 \
+              https://github.com/kivy/python-for-android.git "$P4A"
+          fi
+          python - <<'PY'
+          import pathlib
+          import sys
+
+          source = pathlib.Path(
+              ".buildozer/android/platform/python-for-android/"
+              "pythonforandroid/build.py"
+          )
+          text = source.read_text()
+
+          fixes = [
+              (
+                  "многоархитектурная сборка ломает pip",
+                  # venv создаётся заново для каждой архитектуры поверх уже
+                  # существующего. Повторный ensurepip кладёт встроенный pip
+                  # поверх ранее обновлённого, пакет собирается из файлов двух
+                  # версий, и следующий вызов pip падает с ImportError.
+                  "shprint(host_python, '-m', 'venv', 'venv')",
+                  "shprint(host_python, '-m', 'venv', '--clear', 'venv')",
+              ),
+              (
+                  "платформенное колесо принимается за pure python",
+                  # Зависимости разрешаются с --platform, поэтому приходит
+                  # Android-колесо; проверка же спрашивает «совместимо ли оно
+                  # с архитектурой» вместо «независимо ли оно от платформы»,
+                  # и колесо ставится без --platform, а pip его отвергает.
+                  'filename.endswith(".whl") and not is_wheel_compatible(filename, arch, ctx)',
+                  'filename.endswith(".whl") and not is_wheel_platform_independent(filename)',
+              ),
+          ]
+
+          for title, old, new in fixes:
+              if new in text:
+                  print(f"уже исправлено: {title}")
+                  continue
+              if old not in text:
+                  sys.exit(
+                      f"не найден фрагмент для правки «{title}».\n"
+                      "python-for-android изменился — проверьте, нужна ли она ещё."
+                  )
+              text = text.replace(old, new)
+              print(f"исправлено: {title}")
+
+          source.write_text(text)
+          PY
+
+      - name: Сборка APK
+        run: buildozer -v android debug
+
+      - name: Проверить собранное
+        run: |
+          set -euo pipefail
+          APK=$(ls bin/*.apk)
+          echo "собрано: $APK ($(du -h "$APK" | cut -f1))"
+          TOOLS=$(ls -d "$HOME"/.buildozer/android/platform/android-sdk/build-tools/* | sort -V | tail -1)
+          "$TOOLS/apksigner" verify --verbose "$APK"
+          "$TOOLS/aapt2" dump badging "$APK" | grep -E "^package|application-label|native-code"
+          sha256sum bin/*.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: bin/*.apk
+          if-no-files-found: error
+
+      - name: Опубликовать релиз
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Отладочная сборка DP Graph Builder ${GITHUB_REF_NAME}."
+            echo
+            echo "APK подписан отладочным ключом: для установки на устройство"
+            echo "этого достаточно, но в Google Play такой файл не принимают —"
+            echo "туда нужна сборка, подписанная собственным ключом."
+            echo
+            echo "Контрольные суммы:"
+            echo '```'
+            sha256sum bin/*.apk | sed 's|bin/||'
+            echo '```'
+          } > notes.md
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Релиз уже создан вручную в веб-интерфейсе: дополняем его файлами.
+            gh release upload "$GITHUB_REF_NAME" bin/*.apk --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" bin/*.apk \
+              --title "DP Graph Builder $GITHUB_REF_NAME" \
+              --notes-file notes.md
+          fi
