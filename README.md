@@ -26,8 +26,8 @@ python main.py
 ```bash
 pip install buildozer cython
 sudo apt install -y openjdk-17-jdk-headless zip unzip autoconf automake \
-    libtool libtool-bin pkg-config zlib1g-dev libncurses-dev cmake \
-    libffi-dev libssl-dev build-essential ccache
+    libtool libtool-bin libltdl-dev pkg-config zlib1g-dev libncurses-dev \
+    cmake libffi-dev libssl-dev build-essential ccache
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 buildozer -v android debug        # результат появится в bin/
 ```
@@ -61,9 +61,66 @@ unzip -q android-ndk-r28c-linux.zip -d ~/.buildozer/android/platform
 ```
 
 **`HTTP Error 403: Forbidden` при «Downloading recipes».** Сборке нужны
-исходники с `github.com`: CPython, Kivy, SDL2, libffi, sqlite3. Такой ответ
-означает, что до GitHub не пускает корпоративный прокси или фильтр egress —
-проверьте доступ к `codeload.github.com`.
+исходники с `github.com`: CPython, Kivy, pyjnius, libffi, sqlite3. Такой ответ
+означает, что до GitHub не пускает корпоративный прокси или фильтр egress.
+Проверьте `codeload.github.com`. Обходной путь — заранее положить архивы в
+кэш p4a: он пропускает закачку, если рядом с файлом лежит маркер:
+
+```bash
+PKG=.buildozer/android/platform/build-*/packages
+mkdir -p $PKG/sdl2 && cd $PKG/sdl2
+curl -LO https://www.libsdl.org/release/SDL2-2.30.11.tar.gz
+touch .mark-SDL2-2.30.11.tar.gz
+```
+
+SDL2, SDL2_image, SDL2_mixer и SDL2_ttf доступны на `libsdl.org`, OpenSSL —
+на `openssl.org`. Для архивов git-тегов (CPython, libffi, sqlite3, pyjnius,
+kivy) подойдёт `git archive` из клона — GitHub отдаёт ровно его:
+
+```bash
+git clone --depth 1 -b 2.3.1 https://github.com/kivy/kivy.git /tmp/kivy
+git -C /tmp/kivy archive --format=zip --prefix=kivy-2.3.1/ 2.3.1 -o $PKG/kivy/2.3.1.zip
+touch $PKG/kivy/.mark-2.3.1.zip
+```
+
+**`configure.ac: error: possibly undefined macro: LT_SYS_SYMBOL_USCORE`
+при сборке libffi.** Не хватает пакета **`libltdl-dev`**: этот макрос лежит
+в `ltdl.m4`, а не в `libtool.m4`, который ставится с `libtool`. После
+установки удалите каталог сборки libffi, чтобы `autoreconf` пошёл заново:
+
+```bash
+sudo apt install -y libltdl-dev
+rm -rf .buildozer/android/platform/build-*/build/other_builds/libffi
+```
+
+**`ImportError: cannot import name 'BuildDependencyInstallError'` при сборке
+под вторую архитектуру.** Дефект p4a при нескольких значениях
+`android.archs`: для каждой архитектуры он выполняет `python -m venv venv`
+поверх уже существующего окружения. Повторный `ensurepip` кладёт встроенный
+pip поверх ранее обновлённого, и пакет собирается из файлов двух версий
+(в `site-packages` видно сразу две `pip-*.dist-info`). Лечится флагом
+`--clear` в `pythonforandroid/build.py`:
+
+```python
+shprint(host_python, '-m', 'venv', '--clear', 'venv')
+```
+
+Либо соберите по одной архитектуре за раз.
+
+**`<пакет>-android_24_*.whl is not a supported wheel on this platform`.**
+Тоже дефект p4a: разрешая зависимости, он вызывает pip с `--platform`,
+получает платформенное Android-колесо и помечает его как «pure python»,
+а устанавливает уже без `--platform`. В `process_python_modules`
+(`pythonforandroid/build.py`) вызывается не тот предикат — рядом объявлен
+подходящий `is_wheel_platform_independent`:
+
+```python
+if filename.endswith(".whl") and not is_wheel_platform_independent(filename):
+```
+
+**Пустое `android.permissions =`** buildozer записывает в манифест как
+разрешение `android.permission.`. Если разрешения не нужны, ключ надо
+закомментировать, а не оставлять пустым.
 
 **JDK.** Нужен именно 17: с JDK 21 Android Gradle Plugin из текущего p4a
 собирается ненадёжно.
