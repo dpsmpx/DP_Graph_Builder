@@ -24,9 +24,49 @@ python main.py
 ## Сборка APK
 
 ```bash
-pip install buildozer
+pip install buildozer cython
+sudo apt install -y openjdk-17-jdk-headless zip unzip autoconf automake \
+    libtool libtool-bin pkg-config zlib1g-dev libncurses-dev cmake \
+    libffi-dev libssl-dev build-essential ccache
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 buildozer -v android debug        # результат появится в bin/
 ```
+
+Первый запуск скачивает Android SDK и NDK (около 10 ГБ) и компилирует
+CPython, OpenSSL, SDL2 и Kivy под каждую архитектуру из `android.archs`.
+Это занимает десятки минут; повторные сборки идут заметно быстрее.
+
+### Если что-то пошло не так
+
+**`End-of-central-directory signature not found` при распаковке NDK.**
+Архив NDK весит около 690 МБ, и buildozer скачивает его без проверки
+контрольной суммы: оборванная закачка проявляется именно этой ошибкой
+`unzip`, а не сообщением о сети. Проверьте размер и докачайте:
+
+```bash
+cd ~/.buildozer/android/platform
+curl -sI https://dl.google.com/android/repository/android-ndk-r28c-linux.zip \
+  | grep -i content-length                      # ожидаемый размер
+stat -c %s android-ndk-r28c-linux.zip           # что скачалось
+curl -L -C - -o android-ndk-r28c-linux.zip \
+  https://dl.google.com/android/repository/android-ndk-r28c-linux.zip
+unzip -t android-ndk-r28c-linux.zip             # должно быть без ошибок
+```
+
+Если buildozer снова начинает качать архив с нуля, распакуйте его вручную:
+установку NDK он пропускает, когда каталог уже на месте.
+
+```bash
+unzip -q android-ndk-r28c-linux.zip -d ~/.buildozer/android/platform
+```
+
+**`HTTP Error 403: Forbidden` при «Downloading recipes».** Сборке нужны
+исходники с `github.com`: CPython, Kivy, SDL2, libffi, sqlite3. Такой ответ
+означает, что до GitHub не пускает корпоративный прокси или фильтр egress —
+проверьте доступ к `codeload.github.com`.
+
+**JDK.** Нужен именно 17: с JDK 21 Android Gradle Plugin из текущего p4a
+собирается ненадёжно.
 
 ## Тесты
 
