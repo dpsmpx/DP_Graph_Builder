@@ -91,12 +91,33 @@ jobs:
         run: |
           set -euo pipefail
           P4A=.buildozer/android/platform/python-for-android
+          P4A_TAG=v2026.05.09
           if [ ! -d "$P4A/.git" ]; then
             mkdir -p "$(dirname "$P4A")"
-            # Версия зафиксирована: патчи ниже привязаны к конкретным строкам,
-            # а master меняется. При обновлении проверьте, нужны ли они ещё.
-            git clone --depth 1 --branch v2026.05.09 \
+            # Клонировать сразу по тегу нельзя: это даёт отсоединённый HEAD,
+            # а buildozer сверяет ветку существующего клона со своей
+            # настройкой p4a.branch (по умолчанию master) и при расхождении
+            # молча удаляет каталог и клонирует заново — вместе с патчами.
+            # Поэтому берём ветку master и сдвигаем её на тег: HEAD оказывается
+            # ровно на нужной версии, а `git branch -vv` по-прежнему говорит
+            # «master», и buildozer клон не трогает.
+            git clone --branch master --single-branch \
               https://github.com/kivy/python-for-android.git "$P4A"
+            git -C "$P4A" fetch --quiet origin tag "$P4A_TAG"
+            git -C "$P4A" reset --hard "$P4A_TAG"
+          fi
+          echo "версия python-for-android:"
+          git -C "$P4A" describe --tags --exact-match HEAD || git -C "$P4A" rev-parse --short HEAD
+
+          # Buildozer читает ветку клона именно так и сравнивает её с
+          # p4a.branch. Не совпадёт — каталог будет удалён вместе с патчами,
+          # и сборка упадёт минут через двадцать с невнятной ошибкой pip.
+          # Проверяем сразу, чтобы такая поломка стоила секунду, а не полчаса.
+          SEEN=$(git -C "$P4A" branch -vv | awk '{print $2}')
+          echo "buildozer увидит ветку: $SEEN"
+          if [ "$SEEN" != "master" ]; then
+            echo "::error::buildozer ожидает ветку master и удалит клон вместе с патчами"
+            exit 1
           fi
           python - <<'PY'
           import pathlib
