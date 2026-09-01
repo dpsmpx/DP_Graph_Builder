@@ -172,8 +172,35 @@ jobs:
           # на «Aidl not found». Ответы подаём перенаправлением из файла, а не
           # через `yes |`: GitHub запускает шаги с pipefail, и завершение yes
           # по SIGPIPE вернуло бы код 141 даже при успешной сборке.
-          printf 'y\n%.0s' $(seq 200) > "$RUNNER_TEMP/sdk-license-accept.txt"
-          buildozer -v android debug < "$RUNNER_TEMP/sdk-license-accept.txt"
+          ACCEPT="$RUNNER_TEMP/sdk-license-accept.txt"
+          LOG="$RUNNER_TEMP/buildozer.log"
+          printf 'y\n%.0s' $(seq 200) > "$ACCEPT"
+
+          # Maven Central регулярно отвечает 429 на общие адреса раннеров
+          # GitHub, и Gradle роняет упаковку уже после того, как всё собрано.
+          # Это внешнее ограничение, а не ошибка сборки, поэтому повторяем —
+          # но только распознав сетевой сбой, чтобы настоящая ошибка не
+          # маскировалась тремя одинаковыми падениями. Повтор дёшев: рецепты
+          # уже собраны и переиспользуются, до упаковки доходит за минуты.
+          for attempt in 1 2 3; do
+            echo "::group::Сборка, попытка $attempt из 3"
+            if buildozer -v android debug < "$ACCEPT" 2>&1 | tee "$LOG"; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+
+            if ! grep -qE 'status code 429|Too Many Requests|Could not GET|Could not resolve all artifacts|Connection timed out|Read timed out|Connection reset|Network is unreachable' "$LOG"; then
+              echo "::error::Сборка упала не из-за сети — смотрите лог выше"
+              exit 1
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::Внешний репозиторий недоступен, повтор через 90 с"
+              sleep 90
+            fi
+          done
+          echo "::error::Внешний репозиторий недоступен после трёх попыток"
+          exit 1
 
       - name: Проверить собранное
         run: |

@@ -152,6 +152,12 @@ shprint(host_python, '-m', 'venv', '--clear', 'venv')
 if filename.endswith(".whl") and not is_wheel_platform_independent(filename):
 ```
 
+**`Received status code 429 from server: Too Many Requests` при упаковке
+Gradle.** Maven Central ограничивает запросы с общих адресов раннеров CI.
+Сборка при этом уже прошла целиком и падает на последнем шаге. Это внешний
+временный сбой — помогает повтор; workflow делает его сам, распознав
+сетевую ошибку, и не повторяет настоящие ошибки сборки.
+
 **Пустое `android.permissions =`** buildozer записывает в манифест как
 разрешение `android.permission.`. Если разрешения не нужны, ключ надо
 закомментировать, а не оставлять пустым.
