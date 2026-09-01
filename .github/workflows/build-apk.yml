@@ -15,6 +15,13 @@ on:
   release:
     types: [published]   # релиз, созданный вручную в веб-интерфейсе
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Тег существующего релиза, к которому приложить APK.
+          Пусто — APK останется только артефактом сборки.
+        required: false
+        default: ''
 
 permissions:
   contents: write   # нужно, чтобы gh release create мог создать релиз
@@ -138,7 +145,14 @@ jobs:
           PY
 
       - name: Сборка APK
-        run: buildozer -v android debug
+        run: |
+          # Android SDK спрашивает согласие с лицензией Google. Ответить в CI
+          # некому, поэтому buildozer молча пропускает build-tools и падает
+          # на «Aidl not found». Ответы подаём перенаправлением из файла, а не
+          # через `yes |`: GitHub запускает шаги с pipefail, и завершение yes
+          # по SIGPIPE вернуло бы код 141 даже при успешной сборке.
+          printf 'y\n%.0s' $(seq 200) > "$RUNNER_TEMP/sdk-license-accept.txt"
+          buildozer -v android debug < "$RUNNER_TEMP/sdk-license-accept.txt"
 
       - name: Проверить собранное
         run: |
@@ -157,13 +171,14 @@ jobs:
           if-no-files-found: error
 
       - name: Опубликовать релиз
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
           {
-            echo "Отладочная сборка DP Graph Builder ${GITHUB_REF_NAME}."
+            echo "Отладочная сборка DP Graph Builder ${TAG}."
             echo
             echo "APK подписан отладочным ключом: для установки на устройство"
             echo "этого достаточно, но в Google Play такой файл не принимают —"
@@ -174,11 +189,11 @@ jobs:
             sha256sum bin/*.apk | sed 's|bin/||'
             echo '```'
           } > notes.md
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          if gh release view "$TAG" >/dev/null 2>&1; then
             # Релиз уже создан вручную в веб-интерфейсе: дополняем его файлами.
-            gh release upload "$GITHUB_REF_NAME" bin/*.apk --clobber
+            gh release upload "$TAG" bin/*.apk --clobber
           else
-            gh release create "$GITHUB_REF_NAME" bin/*.apk \
-              --title "DP Graph Builder $GITHUB_REF_NAME" \
+            gh release create "$TAG" bin/*.apk \
+              --title "DP Graph Builder $TAG" \
               --notes-file notes.md
           fi
